@@ -70,6 +70,7 @@ import android.widget.LinearLayout;
 import android.widget.PopupMenu;
 import android.widget.RemoteViews;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.android.internal.statusbar.IStatusBarService;
 import com.android.internal.statusbar.StatusBarIcon;
@@ -560,6 +561,23 @@ public abstract class BaseStatusBar extends SystemUI implements
                             values.put(PackageTable.PACKAGE_NAME, packageNameF);
                             mContext.getContentResolver().insert(SPAM_MESSAGE_URI, values);
                             removeNotification(entry.key);
+                        } else if (item.getItemId() == R.id.notification_floating_item) {
+                            boolean allowed = true;
+                            try {
+                                // preloaded apps are added to the blacklist array when is recreated, handled in the notification manager
+                                allowed = mNotificationManager.isPackageAllowedForFloatingMode(packageNameF);
+                            } catch (android.os.RemoteException ex) {
+                                // System is dead
+                            }
+                            if (allowed) {
+                                launchFloating(contentIntent);
+                                animateCollapsePanels(CommandQueue.FLAG_EXCLUDE_NONE);
+                            } else {
+                                String text = mContext.getResources().getString(R.string.floating_mode_blacklisted_app);
+                                int duration = Toast.LENGTH_LONG;
+                                animateCollapsePanels(CommandQueue.FLAG_EXCLUDE_NONE);
+                                Toast.makeText(mContext, text, duration).show();
+                            }
                         } else {
                             return false;
                         }
@@ -934,52 +952,35 @@ public abstract class BaseStatusBar extends SystemUI implements
             } catch (RemoteException e) {
             }
 
-            int[] pos = new int[2];
-            v.getLocationOnScreen(pos);
-            final Rect r = new Rect(pos[0], pos[1], pos[0]+v.getWidth(), pos[1]+v.getHeight());
-
-            if (mProtected) {
-                mProtectedAppReceiver = new BroadcastReceiver() {
-                    @Override
-                    public void onReceive(Context context, Intent intent) {
-                        boolean result = intent.getBooleanExtra("broadcast_result", false);
-                        if (result) {
-                            doRealClick(r);
-                        }
-                        mContext.unregisterReceiver(this);
-                    }
-                };
-                mContext.registerReceiver(mProtectedAppReceiver,
-                        new IntentFilter(ACTION_BROADCAST_RESULT));
-                Intent protectedIntent = new Intent();
-                protectedIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                protectedIntent.setComponent(LOCK_PATTERN_COMPONENT);
-                protectedIntent.putExtra(EXTRA_BROADCAST_RESULT, true);
-                mContext.startActivity(protectedIntent);
-
-                // close the shade if it was open
-                animateCollapsePanels(CommandQueue.FLAG_EXCLUDE_NONE);
-                visibilityChanged(false);
-                return;
-            } else {
-                doRealClick(r);
+            int flags = Intent.FLAG_FLOATING_WINDOW | Intent.FLAG_ACTIVITY_CLEAR_TASK;
+            boolean allowed = true; // default on, except for preloaded false
+            try {
+                // preloaded apps are added to the blacklist array when is recreated, handled in the notification manager
+                allowed = mNotificationManager.isPackageAllowedForFloatingMode(mPkg);
+            } catch (android.os.RemoteException ex) {
+                // System is dead
             }
-        }
 
-        private void doRealClick(Rect r) {
-            if (mIntent != null) {
-
+            if (mPendingIntent != null) {
+                int[] pos = new int[2];
+                v.getLocationOnScreen(pos);
                 Intent overlay = new Intent();
-                overlay.setSourceBounds(r);
+                if (mFloat && allowed) overlay.addFlags(flags);
+                overlay.setSourceBounds(
+                        new Rect(pos[0], pos[1], pos[0] + v.getWidth(), pos[1] + v.getHeight()));
                 try {
                     mIntent.send(mContext, 0, overlay);
                 } catch (PendingIntent.CanceledException e) {
                     // the stack trace isn't very helpful here.  Just log the exception message.
                     Log.w(TAG, "Sending contentIntent failed: " + e);
                 }
-
-                KeyguardTouchDelegate.getInstance(mContext).dismiss();
+            } else if(mIntent != null) {
+                if (mFloat && allowed) mIntent.addFlags(flags);
+                mContext.startActivity(mIntent);
             }
+
+
+            KeyguardTouchDelegate.getInstance(mContext).dismiss();
 
             try {
                 mBarService.onNotificationClick(mPkg, mTag, mId);
